@@ -1,60 +1,96 @@
 module Main where
 
-type ProjectIdeaId = ContractId ProjectIdea
-type ProjectId = ContractId Project
+data FailedGuess = GuessOutcome_TooLow | GuessOutcome_TooHigh
 
-template ProjectIdea
-    with
-        employee : Party
-        colleague : Party
-        manager : Party
-        project : Text
-        note : Text
-    where 
-        signatory employee
-        observer colleague, manager
+template Secret
+  with
+    gameMaster : Party
+    secretNumber : Int
+  where
+    signatory gameMaster
+    nonconsuming choice Divulge : Int
+      controller gameMaster
+      do
+        pure secretNumber
 
-        -- employee can propose a project idea 
-        choice Propose : ProjectIdeaId -- "ProjectIdeaId" replaces "ContractId ProjectIdea"
-            controller employee
-            do
-                create this
+template GuessingGame
+  with
+    gameMaster : Party
+    public : Party
+    secretId : ContractId Secret
+  where
+    signatory gameMaster
+    observer public
+    nonconsuming choice InvitePlayer : ContractId GameInvitation
+      with invitedPlayer : Party
+      controller gameMaster
+      do
+        create GameInvitation with
+          gameMaster
+          invitedPlayer
+          invitedGameInstance = self
+    nonconsuming choice AcceptGuessSubmission : Either FailedGuess Party
+      with
+        guessingNumber : Int
+      controller gameMaster
+      do
+        secret <- exercise secretId Divulge
+        case compare guessingNumber secret of
+          LT -> pure (Left GuessOutcome_TooLow)
+          GT -> pure (Left GuessOutcome_TooHigh)
+          EQ -> do
+            archive self
+            pure (Right public)
 
-        -- upon getting rejected, employee can revise the project idea
-        choice Revise : ProjectIdeaId
-            with
-                newProject : Text
-                newNote : Text 
-            controller employee
-            do
-                create this with
-                    project = newProject
-                    note = newNote
+template GuessingGameResult
+  with
+    gameMaster : Party
+    public : Party
+    winner : Party
+    number : Int
+  where
+    signatory gameMaster, winner
 
-        -- manager can reject the project idea
-        choice Reject : ProjectIdeaId 
-            with
-                feedback : Text
-            controller manager
-            do
-                create this with 
-                    note = feedback 
-        
-        -- manager can accept the project idea, which will archive the project that the choice is being exercised and create a new contract
-        choice Accept : ProjectId
-            controller manager
-            do
-                create Project with
-                    employeeInContract = employee
-                    managerInContract = manager
-                    projectTitle = project 
-                    description = note 
+template GamePlayerGuess
+  with
+    gameMaster : Party
+    thisPlayer : Party
+    thisGameInstance : ContractId GuessingGame
+    thisGuess : Int
+  where
+    signatory gameMaster, thisPlayer
+    nonconsuming choice ProcessGuess : Either FailedGuess (ContractId GuessingGameResult)
+      controller gameMaster
+      do
+        result <- exercise thisGameInstance AcceptGuessSubmission with
+          guessingNumber = thisGuess
+        case result of
+          Left failure -> pure (Left failure)
+          Right public -> Right <$> create GuessingGameResult with
+            gameMaster
+            public
+            winner = thisPlayer
+            number = thisGuess
 
-template Project
-    with 
-        employeeInContract : Party
-        managerInContract : Party
-        projectTitle : Text 
-        description : Text 
-    where
-        signatory employeeInContract, managerInContract
+template GameInvitation
+  with
+    gameMaster : Party
+    invitedPlayer : Party
+    invitedGameInstance : ContractId GuessingGame
+  where
+    signatory gameMaster
+    observer invitedPlayer
+    choice MakeGuess : ContractId GamePlayerGuess
+      with
+        myGuess : Int
+      controller invitedPlayer
+      do
+        create GamePlayerGuess with
+          gameMaster
+          thisPlayer = invitedPlayer
+          thisGameInstance = invitedGameInstance
+          thisGuess = myGuess
+    choice RejectInvitation : ()
+      controller invitedPlayer
+      do
+        pure ()

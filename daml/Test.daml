@@ -2,28 +2,68 @@ module Test where
 import Main
 import Daml.Script
 
-setup : Script ProjectId
-setup = do 
+setup : Script (ContractId GuessingGameResult)
+setup = do
     alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
     bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
     charlie <- allocatePartyWithHint "Charlie" (PartyIdHint "Charlie")
+    debbie <- allocatePartyWithHint "Debbie" (PartyIdHint "Debbie")
+    emma <- allocatePartyWithHint "Emma" (PartyIdHint "Emma")
+    public <- allocatePartyWithHint "Public" (PartyIdHint "Public")
 
-    bobProjectIdea <- submit bob do
-        createCmd ProjectIdea with
-            employee = bob
-            colleague = charlie
-            manager = alice
-            project = "Daml Fundamentals Certification Capstone Rubric - Draft No. 1"
-            note = "Should include both backend AND frontend"
+    -- Alice sets up the guessing game
+    aliceSecret <- submit alice do
+      createCmd Secret with
+        gameMaster = alice
+        secretNumber = 17
+    aliceGame <- submit alice do
+      createCmd GuessingGame with
+        gameMaster = alice
+        public
+        secretId = aliceSecret
 
-    aliceRejects <- submit alice do 
-        exerciseCmd bobProjectIdea Reject with
-            feedback = "No way, teaching frontend at this point is too much"
+    -- Alice invites the players
+    aliceInvitesBob <- submit alice do
+      exerciseCmd aliceGame InvitePlayer with invitedPlayer = bob
     
-    bobRevises <- submit bob do
-        exerciseCmd aliceRejects Revise with
-            newProject = "Daml Fundamentals Certification Capstone Rubric - Draft No.2"
-            newNote = "Agreed, let's focus on the Daml backend and Navigator"
+    aliceInvitesCharlie <- submit alice do
+      exerciseCmd aliceGame InvitePlayer with invitedPlayer = charlie
+    
+    aliceInvitesDebbie <- submit alice do
+      exerciseCmd aliceGame InvitePlayer with invitedPlayer = debbie
 
-    submit alice do
-        exerciseCmd bobRevises Accept
+    aliceInvitesEmma <- submit alice do
+      exerciseCmd aliceGame InvitePlayer with invitedPlayer = emma
+
+    -- Players can decline to play or make a guess
+    charlieDeclines <- submit charlie do
+      exerciseCmd aliceInvitesCharlie RejectInvitation
+
+    bobGuesses <- submit bob do
+      exerciseCmd aliceInvitesBob MakeGuess with
+        myGuess = 10
+
+    debbieGuesses <- submit debbie do
+      exerciseCmd aliceInvitesDebbie MakeGuess with
+        myGuess = 17
+    
+    -- Alice checks each guess (the other players cannot see the secret held in the contract aliceSecret)
+    bobResult <- submit alice do
+      exerciseCmd bobGuesses ProcessGuess
+
+    case bobResult of
+      Right _ -> fail "Does not happen. Bob has failed to guess correctly."
+      Left GuessOutcome_TooHigh -> fail "Does not happen. Bob guessed too low."
+      Left GuessOutcome_TooLow -> do
+        debbieResult <- submit alice do
+          exerciseCmd debbieGuesses ProcessGuess
+        case debbieResult of
+          Left _ -> fail "Does not happen. Debbie is clairvoyant."
+          Right success -> do
+            -- Emma can no longer play. She should have hustled and guessed sooner.
+            emmaGuesses <- submit emma do
+              exerciseCmd aliceInvitesEmma MakeGuess with
+                myGuess = 17
+            submitMustFail alice do
+              exerciseCmd emmaGuesses ProcessGuess
+            pure success
